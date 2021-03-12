@@ -1,0 +1,715 @@
+---
+title: "PS2"
+author: "Yuri Lee, Seunghoon Choi"
+date: '2021 3 10 '
+output: pdf_document
+---
+
+# Problem 1: visualization
+
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+
+capmetro_UT = read.csv('C:/Users/CHOI/Desktop/capmetro_UT.csv')
+capmetro_UT = mutate(capmetro_UT, day_of_week = factor(day_of_week, 
+                    levels=c("Mon", "Tue", "Wed","Thu", "Fri", "Sat", "Sun")), 
+                     month = factor(month, levels=c("Sep", "Oct","Nov")))
+```
+
+## A. line graphs
+
+```{r, echo=FALSE, fig.width = 10, fig.asp = 0.8, fig.align='center', message=FALSE}
+
+metro_UT_A = capmetro_UT %>%
+  group_by(hour_of_day, day_of_week, month) %>%
+  summarise(boarding_hour = mean(boarding))
+
+ggplot(data = metro_UT_A) +
+  geom_line(aes(x=hour_of_day, y=boarding_hour, color=month)) +
+  facet_wrap(~day_of_week, nrow=3)
+
+```
+Hour of peak boardings is higher at 15~16 on weekdays, but it is more flat on weekends.  
+Average boardings on Mondays in September look lower, because first monday of September is 'Labor Day'.
+Average boardings on Weds/Thurs/Fri in November look lower because of 'Thanksgiving Day
+
+## B. Scatter plots
+
+```{r, echo=FALSE, fig.width = 10, fig.asp = 1.2, fig.align='center'}
+ggplot(data = capmetro_UT) +
+  geom_point(aes(x=temperature, y=boarding, color=weekend)) +
+  facet_wrap(~hour_of_day, nrow=4)
+```
+
+When we hold hour of day and weekend status constant, it does not effect on the number of students riding the bus.
+But whether weekday or not effects a lot on the number of riding the bus.
+       
+       
+       
+# Problem 2: Saratoga house prices
+
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(modelr)
+library(rsample)
+library(mosaic)
+library(caret)
+library(parallel)
+library(foreach)
+data(SaratogaHouses)
+```
+
+## A. Linear model
+
+### Split data sets(test, train) and Fit the linear models
+
+```{r, echo=FALSE, warning=FALSE}
+
+saratoga_split = initial_split(SaratogaHouses, prop=0.8)
+saratoga_train = training(saratoga_split)
+saratoga_test = testing(saratoga_split)
+
+lm1 = lm(price ~. - pctCollege -sewer - waterfront - landValue - newConstruction, 
+         data= saratoga_train)
+
+lm2 = lm(price ~(. - pctCollege -sewer - waterfront - landValue - newConstruction)^2, 
+         data= saratoga_train)
+
+lm3 = lm(price ~(. - pctCollege -sewer - waterfront - landValue - newConstruction) 
+         + (age*(landValue+livingArea+bedrooms+bathrooms)), 
+         data= saratoga_train)
+
+lm4 = lm(price ~(. - pctCollege -sewer - waterfront - newConstruction) 
+         + (age*(landValue+livingArea+bedrooms+bathrooms+newConstruction)) 
+         + (waterfront*(livingArea+bedrooms)), 
+         data= saratoga_train)
+
+lm5 = lm(price ~(. - pctCollege -sewer) 
+         + (age*(landValue+livingArea+bedrooms+bathrooms)) 
+         + (waterfront*(livingArea+bedrooms)) + (newConstruction*(livingArea+bedrooms)), 
+         data= saratoga_train)
+
+lm6 = lm(price ~(. - pctCollege + poly(landValue, 2)) 
+         + (age*(poly(landValue, 2)+livingArea+bedrooms+bathrooms+newConstruction)) 
+         + (waterfront*(livingArea+bedrooms)), 
+         data= saratoga_train)
+```
+         
+Lm1: execpt 'pctCollege, sewer, waterfront, landValue, newConstruction'
+
+Lm2: (execpt 'pctCollege, sewer, waterfront, landValue, newConstruction')^2
+
+Lm3: execpt 'pctCollege, sewer, waterfront, landValue, newConstruction'
+         
+Lm4: (execpt 'pctCollege, sewer, waterfront, newConstruction') + (age*(landValue+livingArea+bedrooms+bathrooms+newConstruction)) + 
+(waterfront*(livingArea+bedrooms))
+         
+Lm5: (execpt 'pctCollege, sewer') + 
+(age*(landValue+livingArea+bedrooms+bathrooms)) + 
+(waterfront*(livingArea+bedrooms)) + 
+(newConstruction*(livingArea+bedrooms))
+
+Lm6: (execpt 'pctCollege' + poly(landValue, 2)) + 
+(age*(poly(landValue, 2) + livingArea+bedrooms+bathrooms+newConstruction)) +
+(waterfront*(livingArea+bedrooms))
+
+
+### Average rmses from 6 models: testing the performances over 10 train/test splits
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+rmse_sim = do(10)*{
+  saratoga_split =  initial_split(SaratogaHouses, prop=0.8)
+  saratoga_train = training(saratoga_split)
+  saratoga_test  = testing(saratoga_split)
+  
+  lm1 = update(lm1, data=saratoga_train)
+  lm2 = update(lm2, data=saratoga_train)
+  lm3 = update(lm3, data=saratoga_train)
+  lm4 = update(lm4, data=saratoga_train)
+  lm5 = update(lm5, data=saratoga_train)
+  lm6 = update(lm6, data=saratoga_train)
+
+  model_errors = c(rmse(lm1, saratoga_test), rmse(lm2, saratoga_test), 
+                   rmse(lm3, saratoga_test), rmse(lm4, saratoga_test),
+                   rmse(lm5, saratoga_test), rmse(lm6, saratoga_test))
+  
+  model_errors
+}
+
+colMeans(rmse_sim)
+
+```
+
+Linear model 6 gives the best prediction, showing the lowest rmse
+
+
+
+## B. KNN model
+
+### Scale the features, and K-fold(5) cross validation(k=5,10,20,30,50)
+```{r, echo=FALSE, warning=FALSE}
+
+saratoga_scale1 = SaratogaHouses %>%
+  mutate(scale(price))
+saratoga_scale2 = saratoga_scale1 %>%
+  mutate(scale(lotSize))
+saratoga_scale3 = saratoga_scale2 %>%
+  mutate(scale(age))
+saratoga_scale4 = saratoga_scale3 %>%
+  mutate(scale(landValue))
+saratoga_scale5 = saratoga_scale4 %>%
+  mutate(scale(livingArea))
+saratoga_scale6 = saratoga_scale5 %>%
+  mutate(scale(pctCollege))
+saratoga_scale7 = saratoga_scale6 %>%
+  mutate(scale(bedrooms))
+saratoga_scale8 = saratoga_scale7 %>%
+  mutate(scale(fireplaces))
+saratoga_scale9 = saratoga_scale8 %>%
+  mutate(scale(bathrooms))
+saratogaScale = saratoga_scale9 %>%
+  mutate(scale(rooms))
+
+
+saratogaScale_split = initial_split(saratogaScale, 0.8)
+saratogaScale_train = training(saratogaScale_split)
+saratogaScale_test = testing(saratogaScale_split)
+
+K_folds = 5
+```
+
+#### k=5
+```{r, echo=FALSE, warning=FALSE}
+saratogaScale = saratogaScale %>%
+  mutate(fold_id = rep(1:K_folds, length=nrow(saratogaScale)) %>% sample)
+
+rmse_cv_5 = foreach(fold = 1:K_folds, .combine='c') %do% {
+  knn5 = knnreg(price ~ scale(bedrooms)+scale(rooms),
+                data=filter(saratogaScale, fold_id != fold), k=5)
+  modelr::rmse(knn5, data=filter(saratogaScale, fold_id == fold))
+}
+
+rmse_cv_5
+```
+
+#### k=10
+```{r, echo=FALSE, warning=FALSE}
+rmse_cv_10 = foreach(fold = 1:K_folds, .combine='c') %do% {
+  knn10 = knnreg(price ~ scale(bedrooms)+scale(rooms),
+                data=filter(saratogaScale, fold_id != fold), k=10)
+  modelr::rmse(knn10, data=filter(saratogaScale, fold_id == fold))
+}
+
+rmse_cv_10
+```
+
+#### k=20
+```{r, echo=FALSE, warning=FALSE}
+rmse_cv_20 = foreach(fold = 1:K_folds, .combine='c') %do% {
+  knn20 = knnreg(price ~ scale(bedrooms)+scale(rooms),
+                 data=filter(saratogaScale, fold_id != fold), k=20)
+  modelr::rmse(knn20, data=filter(saratogaScale, fold_id == fold))
+}
+
+rmse_cv_20
+```
+
+#### k=30
+```{r, echo=FALSE, warning=FALSE}
+rmse_cv_30 = foreach(fold = 1:K_folds, .combine='c') %do% {
+  knn30 = knnreg(price ~ scale(bedrooms)+scale(rooms),
+                 data=filter(saratogaScale, fold_id != fold), k=30)
+  modelr::rmse(knn30, data=filter(saratogaScale, fold_id == fold))
+}
+
+rmse_cv_30
+```
+
+#### k=50
+```{r, echo=FALSE, warning=FALSE}
+rmse_cv_50 = foreach(fold = 1:K_folds, .combine='c') %do% {
+  knn50 = knnreg(price ~ scale(bedrooms)+scale(rooms),
+                 data=filter(saratogaScale, fold_id != fold), k=50)
+  modelr::rmse(knn50, data=filter(saratogaScale, fold_id == fold))
+}
+
+rmse_cv_50
+```
+
+### Compare Mean of rmses from different ks
+```{r, echo=FALSE, warning=FALSE}
+mean_rmse_cv = c(mean(rmse_cv_5), mean(rmse_cv_10), mean(rmse_cv_20), mean(rmse_cv_30), mean(rmse_cv_50))
+
+mean_rmse_cv
+
+```
+knn5 model whose  k-value is 5 shows the best prediction among the five knn-models, which gives the lowest rmse
+
+## C. Report
+The linear model 6 gives the best prediction, showing the lowest rmse among all the models including linear and knn models tried above.
+The model 6 which I would like to suggest reflects all the available variables except personnel and volatile information(percentage of college graduates).
+The “land value variables” which has a stark correlation with the house price is used as a quadratic form from the relationship between two variables. 
+In addition, the variables such as rooms, livingArea, etc. are applied as the interaction form with the “age” variable because mixed effects of each variable on the price need to be considered separately. 
+As a result, we can get much lower errors from the model 6 than those of baseline models.
+
+
+## D. Apendix(Analysis of data)
+### Plots of data
+```{r, echo=FALSE, fig.asp = 0.2, warning=FALSE}
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=lotSize, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=age, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=landValue, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=livingArea, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=pctCollege, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=bedrooms, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=fireplaces, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=bathrooms, y=price))
+ggplot(data=SaratogaHouses) + geom_point(mapping = aes(x=rooms, y=price))
+```
+
+### Mean price of factors
+```{r, echo=FALSE, warning=FALSE}
+
+SaratogaHouses %>%
+  group_by(bedrooms) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(bathrooms) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(rooms) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(fireplaces) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(heating) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(fuel) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(sewer) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(waterfront) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(newConstruction) %>%
+  summarise(mean_price = mean(price))
+
+SaratogaHouses %>%
+  group_by(centralAir) %>%
+  summarise(mean_price = mean(price))
+```
+
+### Summary of Lm6
+```{r, echo=FALSE, warning=FALSE}
+summary(lm6)
+```
+
+
+
+
+# Problem 3: Classification and retrospective sampling
+
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(naivebayes)
+library(modelr)
+library(rsample)
+library(foreach)
+
+german_credit = read.csv('C:/Users/CHOI/Desktop/german_credit.csv')
+```
+
+## A. Bar plot
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+credit_bar = german_credit%>%
+  group_by(history) %>%
+  summarise(Default_ratio = mean(Default))
+
+ggplot(data = credit_bar) +
+  geom_col(aes(x=history, y=Default_ratio))
+```
+
+## B. Logistic regression model
+
+### Split data sets(test, train) and Fit the logistic model
+
+LM : duration + amount + installment + age + history + purpose + foreign
+```{r, echo=FALSE, warning=FALSE}
+credit_split = initial_split(german_credit, prop=0.8)
+credit_train = training(credit_split); credit_test = testing(credit_split)
+
+lm1 = glm(Default ~ duration + amount + installment + age + history + purpose + foreign, 
+                   data=credit_train, family='binomial')
+
+coef(lm1) %>% round(2)
+```
+
+### Predict of in-sample
+```{r, echo=FALSE, warning=FALSE}
+
+phat_train_credit = predict(lm1, credit_train)
+yhat_train_credit = ifelse(phat_train_credit > 0.5, 1, 0)
+confusion_in = table(y = credit_train$Default, 
+                     yhat = yhat_train_credit)
+
+confusion_in
+```
+
+### Predict of out-of-sample
+```{r, echo=FALSE, warning=FALSE}
+
+phat_test_credit = predict(lm1, credit_test)
+yhat_test_credit = ifelse(phat_test_credit > 0.5, 1, 0)
+confusion_out = table(y = credit_test$Default, 
+                     yhat = yhat_test_credit)
+
+confusion_out
+```
+
+### Predict accuracy
+```{r, echo=FALSE, warning=FALSE}
+accuracy_in = sum(diag(confusion_in)/sum(confusion_in))
+accuracy_out = sum(diag(confusion_out)/sum(confusion_out))
+
+accuracy_in
+accuracy_out
+```
+
+### Sampling ratio
+```{r, echo=FALSE, warning=FALSE}
+
+table(german_credit$Default) %>% prop.table %>% round(2)
+```
+
+### Report
+
+Because of oversampling of defaults(30%), default probability of 'good' credit history is higher than that of 'terrible' history.
+And in the model, default probability of 'terrible' history is less than that of 'poor' history.
+Lastly, FDR is too high(in-sample 38.3%, out-of-sample 44.4%), TPR is low(in-sample 15.4%, out-of-sample 16.9%) and accuracy is only around 70%. 
+We cannot screen prospective borrowers to classify them into "high" versus "low" probability of default exactly.  
+So, this data set is not appropriate for building a predictive model of defaults. I would recommend switching to 'prospective sampling'.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Problem 4: Children and hotel reservations
+
+## A. Model building
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(caret)
+library(modelr)
+library(rsample)
+library(nnet)
+library(foreach)
+library(parallel)
+library(purrr)
+
+hotels_dev = read.csv('C:/users/CHOI/Desktop/hotels_dev.csv')
+```
+
+### Data split and Fit models
+```{r, echo=FALSE, warning=FALSE}
+hd_split = initial_split(hotels_dev, prop=0.8)
+hd_train = training(hd_split)
+hd_test = testing(hd_split)
+```
+
+#### baseline model1
+
+lm1 = lm(children ~ market_segment + adults + customer_type + is_repeated_guest)
+```{r, echo=FALSE, warning=FALSE}
+lm1 = lm(children ~ market_segment + adults + customer_type + is_repeated_guest, data=hd_train)
+phat_lm1 = predict(lm1, hd_test)
+yhat_lm1 = ifelse(phat_lm1 >= 0.5, 1, 0)
+confusion1 = table(children=hd_test$children, yhat=yhat_lm1)
+confusion1
+```
+
+#### baseline model2
+
+lm2 = lm(children ~ .-arrival_date)
+```{r, echo=FALSE, warning=FALSE}
+lm2 = lm(children ~ .-arrival_date, data=hd_train)
+phat_lm2 = predict(lm2, hd_test)
+yhat_lm2 = ifelse(phat_lm2 >= 0.5, 1, 0)
+confusion2 = table(children=hd_test$children, yhat=yhat_lm2)
+confusion2
+```
+#### additionally developed models
+
+lm3 = lm(children ~ .-arrival_date + (stays_in_weekend_nights*adults) +
+           (lead_time*hotel))
+```{r, echo=FALSE, warning=FALSE}
+lm3 = lm(children ~ .-arrival_date + (stays_in_weekend_nights*adults) +
+           (lead_time*hotel), data=hd_train)
+phat_lm3 = predict(lm3, hd_test)
+yhat_lm3 = ifelse(phat_lm3 >= 0.5, 1, 0)
+confusion3 = table(children=hd_test$children, yhat=yhat_lm3)
+confusion3
+```
+
+lm4 = lm(children ~ .-arrival_date + (stays_in_weekend_nights*lead_time*hotel))
+```{r, echo=FALSE, warning=FALSE}
+lm4 = lm(children ~ .-arrival_date + (stays_in_weekend_nights*lead_time*hotel), data=hd_train)
+phat_lm4 = predict(lm4, hd_test)
+yhat_lm4 = ifelse(phat_lm4 >= 0.5, 1, 0)
+confusion4 = table(children=hd_test$children, yhat=yhat_lm4)
+confusion4
+```
+
+lm5 = lm(children ~ .-arrival_date + poly(adults, 2) + (stays_in_weekend_nights*poly(adults, 2)) + 
+           (stays_in_weekend_nights*lead_time) + hotel*stays_in_weekend_nights)
+```{r, echo=FALSE, warning=FALSE}
+lm5 = lm(children ~ .-arrival_date + poly(adults, 2) + (stays_in_weekend_nights*poly(adults, 2)) + 
+           (stays_in_weekend_nights*lead_time) + hotel*stays_in_weekend_nights, data=hd_train)
+phat_lm5 = predict(lm5, hd_test)
+yhat_lm5 = ifelse(phat_lm5 >= 0.5, 1, 0)
+confusion5 = table(children=hd_test$children, yhat=yhat_lm5)
+confusion5
+```
+
+lm6 = lm(children ~ .-arrival_date + poly(adults, 2) + (stays_in_weekend_nights*poly(adults, 2)) + 
+           (stays_in_weekend_nights*lead_time) + hotel*stays_in_weekend_nights 
+         + stays_in_weekend_nights*reserved_room_type)
+```{r, echo=FALSE, warning=FALSE}
+lm6 = lm(children ~ .-arrival_date + poly(adults, 2) + (stays_in_weekend_nights*poly(adults, 2)) + 
+           (stays_in_weekend_nights*lead_time) + hotel*stays_in_weekend_nights 
+         + stays_in_weekend_nights*reserved_room_type, data=hd_train)
+phat_lm6 = predict(lm6, hd_test)
+yhat_lm6 = ifelse(phat_lm6 >= 0.5, 1, 0)
+confusion6 = table(children=hd_test$children, yhat=yhat_lm6)
+confusion6
+```
+
+#### stepwise selection with AIC
+
+lm7 = lm(children ~ hotel + lead_time + stays_in_weekend_nights + stays_in_week_nights + 
+           meal + market_segment + distribution_channel + is_repeated_guest + 
+           previous_cancellations + previous_bookings_not_canceled + 
+           reserved_room_type + assigned_room_type + booking_changes + 
+           deposit_type + days_in_waiting_list + customer_type + average_daily_rate + 
+           required_car_parking_spaces + total_of_special_requests + 
+           poly(adults, 2) + stays_in_weekend_nights:poly(adults, 2) + 
+           lead_time:stays_in_weekend_nights + hotel:stays_in_weekend_nights + 
+           hotel:reserved_room_type + reserved_room_type:poly(adults, 2) +
+           market_segment:reserved_room_type)
+```{r, echo=FALSE, warning=FALSE}
+
+lm7 = lm(children ~ hotel + lead_time + stays_in_weekend_nights + stays_in_week_nights + 
+           meal + market_segment + distribution_channel + is_repeated_guest + 
+           previous_cancellations + previous_bookings_not_canceled + 
+           reserved_room_type + assigned_room_type + booking_changes + 
+           deposit_type + days_in_waiting_list + customer_type + average_daily_rate + 
+           required_car_parking_spaces + total_of_special_requests + 
+           poly(adults, 2) + stays_in_weekend_nights:poly(adults, 2) + 
+           lead_time:stays_in_weekend_nights + hotel:stays_in_weekend_nights + 
+           hotel:reserved_room_type + reserved_room_type:poly(adults, 2) +
+           market_segment:reserved_room_type, data=hd_train)
+phat_lm7 = predict(lm7, hd_test)
+yhat_lm7 = ifelse(phat_lm7 >= 0.5, 1, 0)
+confusion7 = table(children=hd_test$children, yhat=yhat_lm7)
+confusion7
+```
+
+### comparison of models' accuracy
+```{r, echo=FALSE, warning=FALSE}
+sum(diag(confusion1)/sum(confusion1))
+sum(diag(confusion2)/sum(confusion2))
+sum(diag(confusion3)/sum(confusion3))
+sum(diag(confusion4)/sum(confusion4))
+sum(diag(confusion5)/sum(confusion5))
+sum(diag(confusion6)/sum(confusion6))
+sum(diag(confusion7)/sum(confusion7))
+```
+We can see the model 5 has the highest accuracy among the model 1 to 6. If we apply a stepwise selection process based on the model 5, the model 7 can be derived.
+The accuracy of the model 7 is the highest. 
+
+#### Averaging the performance of the three models over 10 train/test splits
+#### model2(baseline model), model5(second baseline model), model7(final suggestion)
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+model_accuracy = do(10)*{
+  ### fresh train/test split
+  hd_split = initial_split(hotels_dev, prop=0.8)
+  hd_train = training(hd_split)
+  hd_test = testing(hd_split)
+
+  ### predict with test set
+  phat_lm2 = predict(lm2, hd_test)
+  yhat_lm2 = ifelse(phat_lm2 >= 0.5, 1, 0)
+  confusion2 = table(children=hd_test$children, yhat=yhat_lm2)
+  accuracy_lm2 = sum(diag(confusion2)/sum(confusion2))
+  
+  phat_lm5 = predict(lm5, hd_test)
+  yhat_lm5 = ifelse(phat_lm5 >= 0.5, 1, 0)
+  confusion5 = table(children=hd_test$children, yhat=yhat_lm5)
+  accuracy_lm5 = sum(diag(confusion5)/sum(confusion5))
+  
+  phat_lm7 = predict(lm7, hd_test)
+  yhat_lm7 = ifelse(phat_lm7 >= 0.5, 1, 0)
+  confusion7 = table(children=hd_test$children, yhat=yhat_lm7)
+  accuracy_lm7 = sum(diag(confusion7)/sum(confusion7))
+}
+
+  ### collect accuracy in a single vector
+  accuracies = c(accuracy_lm2, accuracy_lm5, accuracy_lm7)
+  accuracies
+
+
+### average performance across the splits
+colMeans(model_accuracy)
+```
+
+linear model7 gives the highest predict accuracy, around 94% which has improvement over the baseline model.
+
+
+
+## B. Model validation step1: ROC curve for linear model 5,7
+
+```{r, include=FALSE}
+hotels_val = read.csv('C:/users/CHOI/Desktop/hotels_val.csv')
+
+lm7 = lm(children ~ hotel + lead_time + stays_in_weekend_nights + stays_in_week_nights + 
+           meal + market_segment + distribution_channel + is_repeated_guest + 
+           previous_cancellations + previous_bookings_not_canceled + 
+           reserved_room_type + assigned_room_type + booking_changes + 
+           deposit_type + days_in_waiting_list + customer_type + average_daily_rate + 
+           required_car_parking_spaces + total_of_special_requests + 
+           poly(adults, 2) + stays_in_weekend_nights:poly(adults, 2) + 
+           lead_time:stays_in_weekend_nights + hotel:stays_in_weekend_nights + 
+           hotel:reserved_room_type + reserved_room_type:poly(adults, 2) +
+           market_segment:reserved_room_type, data=hd_train)
+
+lm5 = lm(children ~ .-arrival_date + poly(adults, 2) + (stays_in_weekend_nights*poly(adults, 2)) + 
+           (stays_in_weekend_nights*lead_time) + hotel*stays_in_weekend_nights, data=hd_train)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+phat_val_lm7 = predict(lm7, hotels_val, type='response')
+phat_val_lm5 = predict(lm5, hotels_val, type='response')
+
+
+thresh_grid = seq(0.95, 0.05, by=-0.005)
+roc_curve_lm = foreach(thresh=thresh_grid, .combine='rbind') %do% {
+  yhat_val_lm7 = ifelse(phat_val_lm7 >=thresh, 1, 0)
+  yhat_val_lm5 = ifelse(phat_val_lm5 >=thresh, 1, 0)
+  
+confusion_val_lm7 = table(y=hotels_val$children, yhat = yhat_val_lm7)
+confusion_val_lm5 = table(y=hotels_val$children, yhat = yhat_val_lm5)
+
+out_lm7 = data.frame(model="lm7",
+                     TPR = confusion_val_lm7[2,2]/sum(hotels_val$children==1),
+                     FPR = confusion_val_lm7[1,2]/sum(hotels_val$children==0))
+out_lm5 = data.frame(model="lm5",
+                     TPR = confusion_val_lm5[2,2]/sum(hotels_val$children==1),
+                     FPR = confusion_val_lm5[1,2]/sum(hotels_val$children==0))
+
+rbind(out_lm7, out_lm5)
+} %>% as.data.frame()
+
+ggplot(roc_curve_lm) +
+  geom_line(aes(x=FPR, y=TPR, color=model)) +
+  labs(title ="ROC curve for linear model") +
+  theme_bw(base_size = 10)
+```
+LM7 is alittle bit better than LM5
+
+
+## C. Model validation: step2
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+K_folds = 20
+
+hotels_val_k = hotels_val %>%
+  mutate(fold_id = rep(1:K_folds, length=nrow(hotels_val))) %>% 
+  group_by(fold_id) %>%
+  summarise(mean_children = mean(children))
+
+hotels_val_k
+```
+Sample probablity of fold_id is variously scattered(0.048~0.136)
+
+
+```{r, echo=FALSE, warning=FALSE}
+prob_children = foreach(fold=1:K_folds, .combine='c') %do% {
+  phat_cv_lm7 = predict(lm7, data=filter(hotel_val, fold_id==fold))
+  yhat_cv_lm7 = ifelse(phat_cv_lm7 >= 0.5, 1, 0)
+  prob_children = mean(yhat_cv_lm7)
+} %>%as.data.frame()
+
+prob_children
+```
+Predicted probablity of fold_id is around 0.0412.
+This is less than actual probablity.
+
+## D. Appendix: analysing data
+```{r, echo=FALSE, fig.asp = 0.4, warning=FALSE}
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=hotel))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=lead_time))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=stays_in_weekend_nights))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=stays_in_week_nights))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=adults))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=meal))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=market_segment))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=distribution_channel))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=is_repeated_guest))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=previous_cancellations))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=previous_bookings_not_canceled))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=reserved_room_type))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=booking_changes))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=deposit_type))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=days_in_waiting_list))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=customer_type))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=average_daily_rate))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=required_car_parking_spaces))
+ggplot(data=hotels_dev) + geom_point(mapping = aes(x=factor(children), y=total_of_special_requests))
+
+hotels_dev %>%
+  group_by(children) %>%
+  summarize(mean_leadtime = mean(lead_time),
+            mean_stayinweek = mean(stays_in_week_nights),
+            mean_dailyrates = mean(average_daily_rate),
+            mean_requests = mean(total_of_special_requests))
+
+lm7 = lm(children ~ hotel + lead_time + stays_in_weekend_nights + stays_in_week_nights + 
+           meal + market_segment + distribution_channel + is_repeated_guest + 
+           previous_cancellations + previous_bookings_not_canceled + 
+           reserved_room_type + assigned_room_type + booking_changes + 
+           deposit_type + days_in_waiting_list + customer_type + average_daily_rate + 
+           required_car_parking_spaces + total_of_special_requests + 
+           poly(adults, 2) + stays_in_weekend_nights:poly(adults, 2) + 
+           lead_time:stays_in_weekend_nights + hotel:stays_in_weekend_nights + 
+           hotel:reserved_room_type + reserved_room_type:poly(adults, 2) +
+           market_segment:reserved_room_type, data=hd_train)
+```
